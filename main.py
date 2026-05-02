@@ -218,7 +218,7 @@ You are a strict wiki reasoning engine.
 IMPORTANT:
 - This is a NEW and INDEPENDENT question.
 - Do NOT reuse reasoning from previous questions.
-- Keep reasoning concise. Prioritize completing the Final Answer FULLY over lengthy reasonining.
+- Keep reasoning concise. Prioritize completing the Final Answer FULLY over lengthy reasonining although this doesn't mean you should skip reasoning. Just be concise and to the point.
 
 You MUST follow this pipeline:
 1. Extract ONLY relevant facts from context
