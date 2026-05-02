@@ -17,11 +17,11 @@ import WikiRequester
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?", re.IGNORECASE)
 
 TOP_K_PAGES = 5
-MAX_CONTEXT_TOKENS = 5500
+MAX_CONTEXT_TOKENS = 4000
 FORGET_THRESHOLD = 6000
 MIN_PAGES = 2
 GPU_LAYERS = 0
-CTX_SIZE = 10000
+CTX_SIZE = 16384
 
 MODEL_URL = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
 
@@ -199,7 +199,7 @@ def stream(llm, prompt):
     print("Assistant:", end=" ")
 
     out = ""
-    for c in llm.create_completion(prompt, stream=True, max_tokens=512):
+    for c in llm.create_completion(prompt, stream=True, max_tokens=1200):
         t = c["choices"][0].get("text", "")
         out += t
         print(t, end="", flush=True)
@@ -218,6 +218,7 @@ You are a strict wiki reasoning engine.
 IMPORTANT:
 - This is a NEW and INDEPENDENT question.
 - Do NOT reuse reasoning from previous questions.
+- Keep reasoning concise. Prioritize completing the Final Answer FULLY over lengthy reasonining.
 
 You MUST follow this pipeline:
 1. Extract ONLY relevant facts from context
