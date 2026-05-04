@@ -14,11 +14,13 @@ I (@mobogreatthegreat) have been working on EUT-GPT for the past few weeks now a
   - [Prerequisites](#prerequisites)
   - [Steps](#steps)
 - [Installation Process](#installation-process)
+- [Updating](#updating)
 - [Getting Started](#getting-started)
   - [Chat Mode](#chat-mode)
   - [Train Mode](#train-mode)
-- [Updating the Global Train File (Next Update)](#updating-the-global-train-file-next-update)
 - [Commands](#commands)
+- [Updating the Global Train File (Next Update)](#updating-the-global-train-file-next-update)
+- [Issues](#issues)
 - [Transparency](#transparency)
 
 # Installation
@@ -41,7 +43,6 @@ pip install -r requirements.txt
 python main.py
 ```
 
-
 # Installation Process
 After running the `.exe` file on Windows or running `main.py` on Linux/MacOS, the installation script will start.
 
@@ -57,6 +58,9 @@ This section will be separated into 2 sections, one for Chat Mode and one for Tr
 After installation is complete, you will be prompted to select either **Chat mode** (by typing `Chat`) or **Train mode** (by typing `Train`).
 
 If you are new, start with the [Chat Mode](#chat-mode) section.
+
+# Updating
+To update, all you need to do is download the new `.exe` file for Windows and it will work fine and for Linux/MacOS just follow the instructions in the [Installing from Source](#installing-from-source) section and transfer any new created files in the old directory to the new directory
 
 ## Chat Mode
 **Chat Mode** is the mode you will usually use the most, serving as the interface between you and the Generation model.
