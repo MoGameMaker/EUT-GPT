@@ -10,6 +10,9 @@ I (@mobogreatthegreat) have been working on EUT-GPT for the past few weeks now a
 
 # Table of Contents
 - [Installation](#installation)
+- [Installing from Source](#installing-from-source)
+  - [Prerequisites](#prerequisites)
+  - [Steps](#steps)
 - [Installation Process](#installation-process)
 - [Getting Started](#getting-started)
   - [Chat Mode](#chat-mode)
@@ -20,7 +23,24 @@ I (@mobogreatthegreat) have been working on EUT-GPT for the past few weeks now a
 
 # Installation
 - On Windows: Head over to the Releases tab and select the version you want, then install the `.exe` file and run it.
-- On Linux/MacOS: As I have not yet compiled a version for those 2 operating systems, you will need to download the source code and run it yourself to use EUT-GPT.
+- On Linux/MacOS: As I have not yet compiled a version for those 2 operating systems, you will need to download the source code and run it yourself to use EUT-GPT. Please refer to [Installing from Source](#installing-from-source) when using Linux/MacOS.
+
+# Installing from Source
+## Prerequisites
+- Python 3.11+ (3.11 recommended)
+
+## Steps
+1. Download the source code from the Releases tab and extract the folder.
+2. Open a terminal and navigate to the extracted folder.
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+4. Run `main.py` using this command:
+```bash
+python main.py
+```
+
 
 # Installation Process
 After running the `.exe` file on Windows or running `main.py` on Linux/MacOS, the installation script will start.
