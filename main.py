@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
@@ -30,7 +31,7 @@ APP_DIR = os.path.join(BASE_DIR, "EUTGPT")
 MODEL_DIR = os.path.join(APP_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "model.gguf")
 DB_PATH = os.path.join(APP_DIR, "WikiDump.db")
-TRAIN_PATH = os.path.join(APP_DIR, "train.txt")
+TRAIN_PATH = os.path.join(APP_DIR, "train.jsonl")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -247,19 +248,6 @@ def load_train_examples(train_path: str):
         return []
 
     examples: List[TrainExample] = []
-    question = ""
-    answer = ""
-    pages: List[str] = []
-
-    def flush():
-        nonlocal question, answer, pages
-        q = normalize_text(question)
-        a = normalize_text(answer)
-        if q and a:
-            examples.append(TrainExample(q, a, tuple(normalize_text(p) for p in pages if normalize_text(p))))
-        question = ""
-        answer = ""
-        pages = []
 
     with open(train_path, "r", encoding="utf-8") as f:
         for raw in f:
@@ -267,53 +255,37 @@ def load_train_examples(train_path: str):
             if not line:
                 continue
 
-            lower = line.lower()
-            if "/endtrain" in lower:
-                prefix = line[: lower.index("/endtrain")].strip()
-                if prefix and ":" in prefix:
-                    head, value = prefix.split(":", 1)
-                    head = head.strip().lower()
-                    value = normalize_text(value)
-                    if head == "question":
-                        question = value
-                    elif head == "answer":
-                        answer = value
-                    elif head.startswith("page") and value:
-                        pages.append(value)
-                flush()
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
                 continue
 
-            if ":" not in line:
-                continue
+            question = normalize_text(data.get("question", ""))
+            answer = normalize_text(data.get("answer", ""))
+            pages = data.get("pages", [])
 
-            head, value = line.split(":", 1)
-            head = head.strip().lower()
-            value = normalize_text(value)
+            if not isinstance(pages, list):
+                pages = []
 
-            if head == "question":
-                question = value
-            elif head == "answer":
-                answer = value
-            elif head.startswith("page") and value:
-                pages.append(value)
+            cleaned_pages = tuple(normalize_text(p) for p in pages if normalize_text(p))
 
-    flush()
+            if question and answer:
+                examples.append(TrainExample(question, answer, cleaned_pages))
+
     return examples
 
 
 def append_train_example(train_path: str, question: str, answer: str, pages: Sequence[str]):
     os.makedirs(os.path.dirname(train_path), exist_ok=True)
 
-    question = normalize_text(question)
-    answer = normalize_text(answer)
-    pages = [normalize_text(page) for page in pages if normalize_text(page)]
+    record = {
+        "question": normalize_text(question),
+        "answer": normalize_text(answer),
+        "pages": [normalize_text(page) for page in pages if normalize_text(page)],
+    }
 
     with open(train_path, "a", encoding="utf-8") as f:
-        f.write(f"Question: {question}\n")
-        f.write(f"Answer: {answer}\n")
-        for i, page in enumerate(pages, start=1):
-            f.write(f"Page {i}: {page}\n")
-        f.write("/endtrain\n\n")
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def build_context(results):
@@ -392,19 +364,14 @@ You are a strict wiki reasoning engine.
 IMPORTANT:
 - This is a NEW and INDEPENDENT question.
 - Do NOT reuse reasoning from previous questions.
-- Keep reasoning concise. Prioritize completing the Final Answer FULLY over lengthy reasonining although this doesn't mean you should skip reasoning. Just be concise and to the point.
+- Keep reasoning concise and focused on correctness.
+- You must primarily REWRITE information in your own words.
 
-You MUST follow this pipeline:
-1. Extract ONLY relevant facts from context
-2. Compute required values (if any)
-3. Validate result against context
-4. Re-validate consistency
-5. Output final answer
-
-Rules:
-- Do NOT copy raw context
-- Do NOT assume previous questions are related
-- If missing info, say so
+COPYING RULE:
+- You are NOT allowed to copy text verbatim.
+- EXCEPTION: You may copy ONLY when directly quoting a source from CONTEXT.
+- If you copy, it must be clearly marked as a quotation.
+- Otherwise, everything must be paraphrased and rewritten.
 
 CHAT HISTORY:
 {history}
@@ -414,6 +381,11 @@ CONTEXT:
 
 QUESTION:
 {question}
+
+OUTPUT RULES:
+- Prefer rewriting over repetition
+- Combine related facts instead of repeating them
+- Do not mirror sentence structure from context unless quoting
 
 OUTPUT FORMAT:
 Extracted Facts:
@@ -438,28 +410,32 @@ async def main():
 
     print("System ready")
     print("Type Chat or Train.")
-    print("Commands: /updatewiki, /reloadmodel, /train, /back, /quit")
+    print("Commands: /updatewiki, /reloadmodel, /train, /back, /quit, /endtrain")
 
     history = []
     mode = ""
 
     while mode not in {"chat", "train"}:
         mode = normalize_text(input("Mode (Chat/Train): ")).lower()
+
         if mode in {"/quit", "/exit"}:
             return
-        if mode == "/updatewiki":
+
+        if mode == "/train":
+            mode = "train"
+
+        elif mode == "/updatewiki":
             await ensure_database(force_rebuild=True)
             pages = load_pages(DB_PATH)
             page_lookup = build_page_lookup(pages)
             bm25 = BM25PageRetriever(pages) if pages else None
             print("Wiki database updated.")
             mode = ""
+
         elif mode == "/reloadmodel":
             llm = load_llm(force_redownload=True)
             print("Model reloaded.")
             mode = ""
-        elif mode == "/train":
-            mode = "train"
 
     while True:
         if mode == "chat":
@@ -468,11 +444,18 @@ async def main():
                 continue
 
             lower = q.lower()
+
             if lower in {"/quit", "/exit"}:
                 break
+
             if lower == "/train":
                 mode = "train"
                 continue
+
+            if lower == "/back":
+                mode = ""
+                break
+
             if lower == "/updatewiki":
                 await ensure_database(force_rebuild=True)
                 pages = load_pages(DB_PATH)
@@ -480,6 +463,7 @@ async def main():
                 bm25 = BM25PageRetriever(pages) if pages else None
                 print("Wiki database updated.")
                 continue
+
             if lower == "/reloadmodel":
                 llm = load_llm(force_redownload=True)
                 print("Model reloaded.")
@@ -491,10 +475,7 @@ async def main():
             wiki_context = build_context(results)
             train_context = build_train_context(train_results, page_lookup)
 
-            if train_context and wiki_context:
-                context = train_context + "\n\n" + wiki_context
-            else:
-                context = train_context or wiki_context
+            context = train_context + "\n\n" + wiki_context if train_context and wiki_context else train_context or wiki_context
 
             history_text = ""
             for u, a in history:
@@ -516,11 +497,14 @@ async def main():
 
             if not question:
                 continue
+
             if lower in {"/quit", "/exit"}:
                 return
-            if lower == "/back":
-                mode = "chat"
-                continue
+
+            if lower == "/back" or lower == "/endtrain":
+                mode = ""
+                break
+
             if lower == "/updatewiki":
                 await ensure_database(force_rebuild=True)
                 pages = load_pages(DB_PATH)
@@ -528,6 +512,7 @@ async def main():
                 bm25 = BM25PageRetriever(pages) if pages else None
                 print("Wiki database updated.")
                 continue
+
             if lower == "/reloadmodel":
                 llm = load_llm(force_redownload=True)
                 print("Model reloaded.")
@@ -550,8 +535,7 @@ async def main():
             train_examples = load_train_examples(TRAIN_PATH)
             train_bm25 = BM25TrainRetriever(train_examples) if train_examples else None
 
-            print("Updating train file")
-            print()
+            print("Updating train file\n")
 
 
 if __name__ == "__main__":
