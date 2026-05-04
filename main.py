@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
 import sqlite3
-import sys
 import urllib.request
-import asyncio
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from tqdm import tqdm
 import WikiRequester
@@ -17,6 +16,7 @@ import WikiRequester
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?", re.IGNORECASE)
 
 TOP_K_PAGES = 5
+TOP_K_TRAIN = 3
 MAX_CONTEXT_TOKENS = 4000
 FORGET_THRESHOLD = 6000
 MIN_PAGES = 2
@@ -25,14 +25,12 @@ CTX_SIZE = 16384
 
 MODEL_URL = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
 
-
-# ----------------------------
-# APP DATA PATH (IMPORTANT FIX)
-# ----------------------------
-APP_DIR = os.path.join(os.getenv("LOCALAPPDATA"), "EUTGPT")
+BASE_DIR = os.getenv("LOCALAPPDATA") or os.path.expanduser("~")
+APP_DIR = os.path.join(BASE_DIR, "EUTGPT")
 MODEL_DIR = os.path.join(APP_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "model.gguf")
 DB_PATH = os.path.join(APP_DIR, "WikiDump.db")
+TRAIN_PATH = os.path.join(APP_DIR, "train.txt")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -44,6 +42,13 @@ class Page:
     tokens: Tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TrainExample:
+    question: str
+    answer: str
+    pages: Tuple[str, ...]
+
+
 class DownloadProgressBar(tqdm):
     def update_to(self, b=1, bsize=1, tsize=None):
         if tsize is not None:
@@ -51,10 +56,18 @@ class DownloadProgressBar(tqdm):
         self.update(b * bsize - self.n)
 
 
-# ----------------------------
-# MODEL HANDLING (FIXED)
-# ----------------------------
-def ensure_model():
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def normalize_title(text: str) -> str:
+    return normalize_text(text).lower()
+
+
+def ensure_model(force_redownload: bool = False):
+    if force_redownload and os.path.exists(MODEL_PATH):
+        os.remove(MODEL_PATH)
+
     if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 1_000_000:
         print("Model already exists.")
         return MODEL_PATH
@@ -68,8 +81,8 @@ def ensure_model():
     return MODEL_PATH
 
 
-def load_llm(_path=None):
-    ensure_model()
+def load_llm(force_redownload: bool = False):
+    ensure_model(force_redownload=force_redownload)
 
     try:
         from llama_cpp import Llama
@@ -83,13 +96,10 @@ def load_llm(_path=None):
         n_gpu_layers=GPU_LAYERS,
         n_threads=os.cpu_count(),
         n_batch=512,
-        verbose=False
+        verbose=False,
     )
 
 
-# ----------------------------
-# BM25 (UNCHANGED CORE LOGIC)
-# ----------------------------
 class BM25PageRetriever:
     def __init__(self, pages: Sequence[Page], k1: float = 1.5, b: float = 0.75):
         self.pages = list(pages)
@@ -97,7 +107,7 @@ class BM25PageRetriever:
         self.b = b
 
         self.doc_len = [len(p.tokens) for p in pages]
-        self.avgdl = sum(self.doc_len) / len(self.doc_len)
+        self.avgdl = sum(self.doc_len) / len(self.doc_len) if self.doc_len else 0.0
 
         self.doc_freqs = []
         df = defaultdict(int)
@@ -113,12 +123,12 @@ class BM25PageRetriever:
 
     @staticmethod
     def tokenize(text: str):
-        return WORD_RE.findall(text.lower())
+        return WORD_RE.findall((text or "").lower())
 
     def score(self, q, i):
         freq = self.doc_freqs[i]
         dl = self.doc_len[i]
-        score = 0
+        score = 0.0
 
         for term in q:
             tf = freq.get(term, 0)
@@ -134,6 +144,9 @@ class BM25PageRetriever:
         return score
 
     def search(self, query):
+        if not self.pages:
+            return []
+
         q = self.tokenize(query)
         res = []
 
@@ -146,34 +159,170 @@ class BM25PageRetriever:
         return res[:TOP_K_PAGES]
 
 
-# ----------------------------
-# DB LOADING (FIXED PATH)
-# ----------------------------
+class BM25TrainRetriever:
+    def __init__(self, examples: Sequence[TrainExample], k1: float = 1.5, b: float = 0.75):
+        self.examples = list(examples)
+        self.k1 = k1
+        self.b = b
+
+        self.doc_len = [len(self.tokenize(ex.question)) for ex in examples]
+        self.avgdl = sum(self.doc_len) / len(self.doc_len) if self.doc_len else 0.0
+
+        self.doc_freqs = []
+        df = defaultdict(int)
+
+        for ex in examples:
+            tokens = self.tokenize(ex.question)
+            freq = Counter(tokens)
+            self.doc_freqs.append(freq)
+            for t in freq:
+                df[t] += 1
+
+        self.df = dict(df)
+        self.n_docs = len(examples)
+
+    @staticmethod
+    def tokenize(text: str):
+        return WORD_RE.findall((text or "").lower())
+
+    def score(self, q, i):
+        freq = self.doc_freqs[i]
+        dl = self.doc_len[i]
+        score = 0.0
+
+        for term in q:
+            tf = freq.get(term, 0)
+            if not tf:
+                continue
+
+            df = self.df.get(term, 0)
+            idf = math.log(1 + (self.n_docs - df + 0.5) / (df + 0.5))
+
+            denom = tf + self.k1 * (1 - self.b + self.b * (dl / self.avgdl))
+            score += idf * (tf * (self.k1 + 1)) / denom
+
+        return score
+
+    def search(self, query):
+        if not self.examples:
+            return []
+
+        q = self.tokenize(query)
+        res = []
+
+        for i, ex in enumerate(self.examples):
+            s = self.score(q, i)
+            if s > 0:
+                res.append((s, ex))
+
+        res.sort(reverse=True, key=lambda x: x[0])
+        return res[:TOP_K_TRAIN]
+
+
 def load_pages(db_path: str):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     pages = []
     for row in conn.execute("SELECT title, content FROM pages"):
-        title = re.sub(r"\s+", " ", row["title"]).strip()
+        title = normalize_text(row["title"])
         content = row["content"] or ""
-
         text = f"Title: {title}\n\n{content}"
         tokens = tuple(BM25PageRetriever.tokenize(text))
-
         pages.append(Page(title, text, tokens))
 
+    conn.close()
     return pages
 
 
-# ----------------------------
+def build_page_lookup(pages: Sequence[Page]) -> Dict[str, Page]:
+    lookup: Dict[str, Page] = {}
+    for page in pages:
+        lookup[normalize_title(page.title)] = page
+    return lookup
+
+
+def load_train_examples(train_path: str):
+    if not os.path.exists(train_path):
+        return []
+
+    examples: List[TrainExample] = []
+    question = ""
+    answer = ""
+    pages: List[str] = []
+
+    def flush():
+        nonlocal question, answer, pages
+        q = normalize_text(question)
+        a = normalize_text(answer)
+        if q and a:
+            examples.append(TrainExample(q, a, tuple(normalize_text(p) for p in pages if normalize_text(p))))
+        question = ""
+        answer = ""
+        pages = []
+
+    with open(train_path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+
+            lower = line.lower()
+            if "/endtrain" in lower:
+                prefix = line[: lower.index("/endtrain")].strip()
+                if prefix and ":" in prefix:
+                    head, value = prefix.split(":", 1)
+                    head = head.strip().lower()
+                    value = normalize_text(value)
+                    if head == "question":
+                        question = value
+                    elif head == "answer":
+                        answer = value
+                    elif head.startswith("page") and value:
+                        pages.append(value)
+                flush()
+                continue
+
+            if ":" not in line:
+                continue
+
+            head, value = line.split(":", 1)
+            head = head.strip().lower()
+            value = normalize_text(value)
+
+            if head == "question":
+                question = value
+            elif head == "answer":
+                answer = value
+            elif head.startswith("page") and value:
+                pages.append(value)
+
+    flush()
+    return examples
+
+
+def append_train_example(train_path: str, question: str, answer: str, pages: Sequence[str]):
+    os.makedirs(os.path.dirname(train_path), exist_ok=True)
+
+    question = normalize_text(question)
+    answer = normalize_text(answer)
+    pages = [normalize_text(page) for page in pages if normalize_text(page)]
+
+    with open(train_path, "a", encoding="utf-8") as f:
+        f.write(f"Question: {question}\n")
+        f.write(f"Answer: {answer}\n")
+        for i, page in enumerate(pages, start=1):
+            f.write(f"Page {i}: {page}\n")
+        f.write("/endtrain\n\n")
+
+
 def build_context(results):
     out = []
     tokens = 0
 
     for _, p in results:
         chunk = f"[{p.title}]\n{p.text}"
-        size = len(chunk) // 4
+        size = max(1, len(chunk) // 4)
 
         if tokens + size > MAX_CONTEXT_TOKENS and len(out) >= MIN_PAGES:
             break
@@ -184,8 +333,37 @@ def build_context(results):
     return "\n\n".join(out)
 
 
-# ----------------------------
-async def ensure_database():
+def build_train_context(results, page_lookup: Dict[str, Page]):
+    if not results:
+        return ""
+
+    out = ["TRAINED EXAMPLES: Use these as strongly relevant memory when they match the question."]
+
+    for score, ex in results[:TOP_K_TRAIN]:
+        block = [
+            f"[Train Match | score={score:.3f}]",
+            f"Question: {ex.question}",
+            f"Answer: {ex.answer}",
+        ]
+
+        related_pages = []
+        for page_name in ex.pages:
+            page = page_lookup.get(normalize_title(page_name))
+            if page:
+                related_pages.append(f"[{page.title}]\n{page.text}")
+
+        if related_pages:
+            block.append("Relevant Wiki Pages:\n" + "\n\n".join(related_pages))
+
+        out.append("\n".join(block))
+
+    return "\n\n".join(out)
+
+
+async def ensure_database(force_rebuild: bool = False):
+    if force_rebuild and os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+
     if os.path.exists(DB_PATH):
         return
 
@@ -194,7 +372,6 @@ async def ensure_database():
     print("DB ready.")
 
 
-# ----------------------------
 def stream(llm, prompt):
     print("Assistant:", end=" ")
 
@@ -208,9 +385,6 @@ def stream(llm, prompt):
     return out
 
 
-# ----------------------------
-# YOUR SYSTEM PROMPT (UNCHANGED)
-# ----------------------------
 def build_reasoning_prompt(context: str, question: str, history: str) -> str:
     return f"""
 You are a strict wiki reasoning engine.
@@ -250,39 +424,134 @@ Final Answer:
 """
 
 
-# ----------------------------
 async def main():
     await ensure_database()
 
     pages = load_pages(DB_PATH)
-    bm25 = BM25PageRetriever(pages)
+    page_lookup = build_page_lookup(pages)
+    bm25 = BM25PageRetriever(pages) if pages else None
+
+    train_examples = load_train_examples(TRAIN_PATH)
+    train_bm25 = BM25TrainRetriever(train_examples) if train_examples else None
+
     llm = load_llm()
 
     print("System ready")
+    print("Type Chat or Train.")
+    print("Commands: /updatewiki, /reloadmodel, /train, /back, /quit")
 
     history = []
+    mode = ""
+
+    while mode not in {"chat", "train"}:
+        mode = normalize_text(input("Mode (Chat/Train): ")).lower()
+        if mode in {"/quit", "/exit"}:
+            return
+        if mode == "/updatewiki":
+            await ensure_database(force_rebuild=True)
+            pages = load_pages(DB_PATH)
+            page_lookup = build_page_lookup(pages)
+            bm25 = BM25PageRetriever(pages) if pages else None
+            print("Wiki database updated.")
+            mode = ""
+        elif mode == "/reloadmodel":
+            llm = load_llm(force_redownload=True)
+            print("Model reloaded.")
+            mode = ""
+        elif mode == "/train":
+            mode = "train"
 
     while True:
-        q = input("You: ").strip()
-        if q in {"/exit", "/quit"}:
-            break
+        if mode == "chat":
+            q = normalize_text(input("You: "))
+            if not q:
+                continue
 
-        results = bm25.search(q)
-        context = build_context(results)
+            lower = q.lower()
+            if lower in {"/quit", "/exit"}:
+                break
+            if lower == "/train":
+                mode = "train"
+                continue
+            if lower == "/updatewiki":
+                await ensure_database(force_rebuild=True)
+                pages = load_pages(DB_PATH)
+                page_lookup = build_page_lookup(pages)
+                bm25 = BM25PageRetriever(pages) if pages else None
+                print("Wiki database updated.")
+                continue
+            if lower == "/reloadmodel":
+                llm = load_llm(force_redownload=True)
+                print("Model reloaded.")
+                continue
 
-        history_text = ""
-        for u, a in history:
-            history_text += f"User: {u}\nAssistant: {a}\n"
+            results = bm25.search(q) if bm25 else []
+            train_results = train_bm25.search(q) if train_bm25 else []
 
-        prompt = build_reasoning_prompt(context, q, history_text)
+            wiki_context = build_context(results)
+            train_context = build_train_context(train_results, page_lookup)
 
-        if llm:
-            answer = stream(llm, prompt)
+            if train_context and wiki_context:
+                context = train_context + "\n\n" + wiki_context
+            else:
+                context = train_context or wiki_context
+
+            history_text = ""
+            for u, a in history:
+                history_text += f"User: {u}\nAssistant: {a}\n"
+
+            prompt = build_reasoning_prompt(context, q, history_text)
+
+            if llm:
+                answer = stream(llm, prompt)
+            else:
+                answer = results[0][1].text if results else "No relevant wiki pages found."
+                print(answer)
+
+            history.append((q, answer[:200]))
+
         else:
-            answer = results[0][1].text
-            print(answer)
+            question = normalize_text(input("Question: "))
+            lower = question.lower()
 
-        history.append((q, answer[:200]))
+            if not question:
+                continue
+            if lower in {"/quit", "/exit"}:
+                return
+            if lower == "/back":
+                mode = "chat"
+                continue
+            if lower == "/updatewiki":
+                await ensure_database(force_rebuild=True)
+                pages = load_pages(DB_PATH)
+                page_lookup = build_page_lookup(pages)
+                bm25 = BM25PageRetriever(pages) if pages else None
+                print("Wiki database updated.")
+                continue
+            if lower == "/reloadmodel":
+                llm = load_llm(force_redownload=True)
+                print("Model reloaded.")
+                continue
+
+            answer = normalize_text(input("Answer: "))
+            pages_to_save: List[str] = []
+            page_num = 1
+
+            while True:
+                page_name = normalize_text(input(f"Page {page_num}: "))
+                if page_name.lower() == "/endtrain":
+                    break
+                if page_name:
+                    pages_to_save.append(page_name)
+                    page_num += 1
+
+            append_train_example(TRAIN_PATH, question, answer, pages_to_save)
+
+            train_examples = load_train_examples(TRAIN_PATH)
+            train_bm25 = BM25TrainRetriever(train_examples) if train_examples else None
+
+            print("Updating train file")
+            print()
 
 
 if __name__ == "__main__":
