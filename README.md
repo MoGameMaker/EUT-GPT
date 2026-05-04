@@ -14,11 +14,13 @@ I (@mobogreatthegreat) have been working on EUT-GPT for the past few weeks now a
   - [Prerequisites](#prerequisites)
   - [Steps](#steps)
 - [Installation Process](#installation-process)
+- [Updating](#updating)
 - [Getting Started](#getting-started)
   - [Chat Mode](#chat-mode)
   - [Train Mode](#train-mode)
-- [Updating the Global Train File (Next Update)](#updating-the-global-train-file-next-update)
 - [Commands](#commands)
+- [Updating the Global Train File (Next Update)](#updating-the-global-train-file-next-update)
+- [Issues](#issues)
 - [Transparency](#transparency)
 
 # Installation
@@ -41,7 +43,6 @@ pip install -r requirements.txt
 python main.py
 ```
 
-
 # Installation Process
 After running the `.exe` file on Windows or running `main.py` on Linux/MacOS, the installation script will start.
 
@@ -57,6 +58,9 @@ This section will be separated into 2 sections, one for Chat Mode and one for Tr
 After installation is complete, you will be prompted to select either **Chat mode** (by typing `Chat`) or **Train mode** (by typing `Train`).
 
 If you are new, start with the [Chat Mode](#chat-mode) section.
+
+# Updating
+To update, all you need to do is download the new `.exe` file for Windows and it will work fine and for Linux/MacOS just follow the instructions in the [Installing from Source](#installing-from-source) section and transfer any new created files in the old directory to the new directory
 
 ## Chat Mode
 **Chat Mode** is the mode you will usually use the most, serving as the interface between you and the Generation model.
@@ -83,11 +87,6 @@ Train files are stored in the same Cache folder as before as `train.jsonl`.
 
 See also: [Commands](#commands)
 
-# Updating the Global Train File (Next Update)
-If you would like to contribute your train file to be in the global train file, just make an issue with the enhancement tag and upload your `train.jsonl`.
-
-If it's deemed good enough, it will be included in the next minor version (not patches/bug fixes) of EUT-GPT.
-
 # Commands
 There are currently 6 available commands in EUT-GPT:
 
@@ -102,6 +101,26 @@ There are currently 6 available commands in EUT-GPT:
 - If something breaks, you may need to run `/updatewiki`
 - If the model behaves incorrectly, try `/reloadmodel`
 - If you want to switch modes quickly, use `/train` or `/back`
+
+# Updating the Global Train File (Next Update)
+If you would like to contribute your train file to be in the global train file, just make an issue with the enhancement tag and upload your `train.jsonl`.
+
+If it's deemed good enough, it will be included in the next minor version (not patches/bug fixes) of EUT-GPT.
+
+# Issues
+If the model consistently gives incorrect or unexpected answers for the same question, then make an issue with the **bug** tag.
+
+Please include:
+- The exact question you asked  
+- The incorrect or unexpected response  
+- Any relevant training data that might be affecting the result (e.g. your `train.jsonl` file)
+
+This helps identify whether the issue is caused by:
+- The model itself  
+- The wiki/database  
+- Training data interference  
+
+(deleting, modifying and disabling/enabling train files soon)
 
 # Transparency
 Some parts of EUT-GPT were coded using assistance from GPT-5.4 and Claude Haiku 4.5. Although there was use of AI during the development of this project, most of the code was written by me.
